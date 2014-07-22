@@ -56,13 +56,9 @@ define("implicit_base_url", help="prepend protocol/host to url paths")
 define("validate_cert", help="validate certificates", type=bool, default=True)
 
 # default image option settings
-define("background", help="default hexadecimal bg color (RGB or ARGB)")
-define("expand", help="default to expand when rotating", type=int)
 define("filter", help="default filter to use when resizing")
 define("format", help="default format to use when outputting")
-define("mode", help="default mode to use when resizing")
 define("optimize", help="default to optimize when saving", type=int)
-define("position", help="default cropping position")
 define("quality", help="default jpeg quality, 0-100", type=int)
 
 logger = logging.getLogger("tornado.application")
@@ -75,12 +71,9 @@ class PilboxApplication(tornado.web.Application):
                         client_name=options.client_name,
                         client_key=options.client_key,
                         allowed_hosts=options.allowed_hosts,
-                        background=options.background,
-                        expand=options.expand,
                         filter=options.filter,
                         format=options.format,
                         mode=options.mode,
-                        position=options.position,
                         optimize=options.optimize,
                         quality=options.quality,
                         max_requests=options.max_requests,
@@ -91,7 +84,7 @@ class PilboxApplication(tornado.web.Application):
         tornado.web.Application.__init__(self, self.get_handlers(), **settings)
 
     def get_handlers(self):
-        return [(r"/", ImageHandler)]
+        return [(r"/", ImageHandler, dict(w=100, h=100))]
 
 
 class ImageHandler(tornado.web.RequestHandler):
@@ -105,14 +98,16 @@ class ImageHandler(tornado.web.RequestHandler):
         "png": "image/png",
         "webp": "image/webp"}
 
+    w = None
+    h = None
+
+    def initialize(self, w, h):
+        self.w = w
+        self.h = h
+
     @tornado.gen.coroutine
     def get(self):
-        self._validate_request()
-
         url = self.get_argument("url")
-        if self.settings.get("implicit_base_url") \
-                and urlparse(url).hostname is None:
-            url = urljoin(self.settings.get("implicit_base_url"), url)
 
         client = tornado.httpclient.AsyncHTTPClient(
             max_clients=self.settings.get("max_requests"))
@@ -149,35 +144,10 @@ class ImageHandler(tornado.web.RequestHandler):
             super(ImageHandler, self).write_error(status_code, **kwargs)
 
     def _process_response(self, resp):
-        ops = self._get_operations()
-        if "noop" in ops:
-            return resp.buffer
-
         image = Image(resp.buffer)
-        for operation in ops:
-            if operation == "resize":
-                self._image_resize(image)
-            elif operation == "rotate":
-                self._image_rotate(image)
-            elif operation == "region":
-                self._image_region(image)
 
-        return self._image_save(image)
-
-    def _image_region(self, image):
-        image.region(self.get_argument("rect").split(","))
-
-    def _image_resize(self, image):
-        opts = self._get_resize_options()
-        image.resize(self.get_argument("w"), self.get_argument("h"), **opts)
-
-    def _image_rotate(self, image):
-        opts = self._get_rotate_options()
-        image.rotate(self.get_argument("deg"), **opts)
-
-    def _image_save(self, image):
-        opts = self._get_save_options()
-        return image.save(**opts)
+        image.resize(self.w, self.h, **self.settings)
+        return image.save(**self.settings)
 
     def _forward_headers(self, headers):
         mime = self._FORMAT_TO_MIME.get(
@@ -187,84 +157,6 @@ class ImageHandler(tornado.web.RequestHandler):
         for k in ImageHandler.FORWARD_HEADERS:
             if k in headers and headers[k]:
                 self.set_header(k, headers[k])
-
-    def _get_operations(self):
-        return self.get_argument("op", "resize").split(",")
-
-    def _get_resize_options(self):
-        return self._get_options(
-            dict(mode=self.get_argument("mode"),
-                 filter=self.get_argument("filter"),
-                 position=self.get_argument("pos"),
-                 background=self.get_argument("bg")))
-
-    def _get_rotate_options(self):
-        return self._get_options(
-            dict(expand=self.get_argument("expand")))
-
-    def _get_save_options(self):
-        return self._get_options(
-            dict(format=self.get_argument("fmt"),
-                 optimize=self.get_argument("opt"),
-                 quality=self.get_argument("q")))
-
-    def _get_options(self, opts):
-        for k, v in opts.items():
-            if v is None:
-                opts[k] = self.settings.get(k, None)
-        return opts
-
-    def _validate_request(self):
-        self._validate_operation()
-        self._validate_url()
-        self._validate_signature()
-        self._validate_client()
-        self._validate_host()
-
-        opts = self._get_save_options()
-        ops = self._get_operations()
-        if "resize" in ops:
-            Image.validate_dimensions(
-                self.get_argument("w"), self.get_argument("h"))
-            opts.update(self._get_resize_options())
-        if "rotate" in ops:
-            Image.validate_degree(self.get_argument("deg"))
-            opts.update(self._get_rotate_options())
-        if "region" in ops:
-            Image.validate_rectangle(self.get_argument("rect"))
-
-        Image.validate_options(opts)
-
-    def _validate_operation(self):
-        operations = set(self._get_operations())
-        if not operations.issubset(set(ImageHandler.OPERATIONS)):
-            raise errors.OperationError("Unsupported operation")
-
-    def _validate_url(self):
-        url = self.get_argument("url")
-        if not url:
-            raise errors.UrlError("Missing url")
-        elif url.startswith("http://") or url.startswith("https://"):
-            return
-        elif self.settings.get("implicit_base_url") and url.startswith("/"):
-            return
-        raise errors.UrlError("Unsupported protocol")
-
-    def _validate_client(self):
-        client = self.settings.get("client_name")
-        if client and self.get_argument("client") != client:
-            raise errors.ClientError("Invalid client")
-
-    def _validate_signature(self):
-        key = self.settings.get("client_key")
-        if key and not verify_signature(key, urlparse(self.request.uri).query):
-            raise errors.SignatureError("Invalid signature")
-
-    def _validate_host(self):
-        hosts = self.settings.get("allowed_hosts", [])
-        if hosts and urlparse(self.get_argument("url")).hostname not in hosts:
-            raise errors.HostError("Invalid host")
-
 
 def main():
     tornado.options.parse_command_line()
