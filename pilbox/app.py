@@ -16,6 +16,7 @@
 
 from __future__ import absolute_import, division, with_statement
 
+import base64
 import logging
 import socket
 
@@ -43,6 +44,8 @@ define("timeout", help="request timeout in seconds", type=float, default=10)
 define("implicit_base_url", help="prepend protocol/host to url paths")
 define("validate_cert", help="validate certificates", type=bool, default=True)
 
+define("s3_root", help="HTTP address of S3 bucket", type=str, default=None)
+
 logger = logging.getLogger("tornado.application")
 
 class PilboxApplication(tornado.web.Application):
@@ -52,25 +55,36 @@ class PilboxApplication(tornado.web.Application):
                         max_requests=options.max_requests,
                         timeout=options.timeout,
                         implicit_base_url=options.implicit_base_url,
-                        validate_cert=options.validate_cert)
+                        validate_cert=options.validate_cert,
+                        s3_root=options.s3_root)
         settings.update(kwargs)
         tornado.web.Application.__init__(self, self.get_handlers(), **settings)
 
     def get_handlers(self):
-        return [(r"/", ImageHandler, dict(w=200, h=200))]
+        return [(r"/a/(\w+)/(.*)", ImageHandler, dict(w=100, h=100)),
+                (r"/b/(\w+)/(.*)", ImageHandler, dict(w=500, h=500)),
+                (r"/c/(.*)", ImageHandler, dict(w=100, h=100, external=True)),
+                (r"/d/(.*)", ImageHandler, dict(w=500, h=500, external=True))
+        ]
 
 
 class ImageHandler(tornado.web.RequestHandler):
     w = None
     h = None
+    external = False
 
-    def initialize(self, w, h):
+    def initialize(self, w, h, external=False):
         self.w = w
         self.h = h
+        self.external = external
 
     @tornado.gen.coroutine
-    def get(self):
-        url = self.get_argument("url")
+    def get(self, arg1, arg2=None):
+        if self.external:
+            url = base64.b64decode(arg1)
+        else:
+            filename = base64.b64decode(arg2)
+            url = "%s/%s/product-pictures/%s" % (self.settings["s3_root"], arg1, filename)
 
         client = tornado.httpclient.AsyncHTTPClient(
             max_clients=self.settings.get("max_requests"))
@@ -81,7 +95,7 @@ class ImageHandler(tornado.web.RequestHandler):
                 validate_cert=self.settings.get("validate_cert"))
         except (socket.gaierror, tornado.httpclient.HTTPError) as e:
             logger.warn("Fetch error for %s: %s"
-                        % (self.get_argument("url"), str(e)))
+                        % (url, str(e)))
             raise errors.FetchError()
 
         outfile = self._process_response(resp)
@@ -92,9 +106,6 @@ class ImageHandler(tornado.web.RequestHandler):
         outfile.close()
 
         self.finish()
-
-    def get_argument(self, name, default=None):
-        return super(ImageHandler, self).get_argument(name, default)
 
     def write_error(self, status_code, **kwargs):
         err = kwargs["exc_info"][1] if "exc_info" in kwargs else None
@@ -109,7 +120,6 @@ class ImageHandler(tornado.web.RequestHandler):
 
     def _process_response(self, resp):
         image = Image(resp.buffer)
-
         image.resize(self.w, self.h)
         return image.save()
 
