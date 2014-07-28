@@ -111,7 +111,7 @@ class ImageHandler(tornado.web.RequestHandler):
         err = kwargs["exc_info"][1] if "exc_info" in kwargs else None
         if isinstance(err, errors.PilboxError):
             # Don't cache error responses:
-            self.set_header('Cache-Control', 'max-age=0')
+            self.set_header('Cache-Control', 'no-cache')
             self.set_header('Content-Type', 'application/json')
             resp = dict(status_code=status_code,
                         error_code=err.get_code(),
