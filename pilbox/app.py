@@ -83,7 +83,7 @@ class ImageHandler(tornado.web.RequestHandler):
         if self.external:
             url = base64.b64decode(arg1)
         else:
-            filename = base64.b64decode(arg2)
+            filename = base64.b64decode(arg2).replace(" ", "%20")
             url = "%s/%s/product-pictures/%s" % (self.settings["s3_root"], arg1, filename)
 
         client = tornado.httpclient.AsyncHTTPClient(
