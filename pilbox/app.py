@@ -81,7 +81,7 @@ class ImageHandler(tornado.web.RequestHandler):
     @tornado.gen.coroutine
     def get(self, arg1, arg2=None):
         if self.external:
-            url = base64.b64decode(arg1)
+            url = base64.b64decode(arg1).replace(" ", "%20")
         else:
             filename = base64.b64decode(arg2).replace(" ", "%20")
             url = "%s/%s/product-pictures/%s" % (self.settings["s3_root"], arg1, filename)
